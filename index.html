@@ -2823,7 +2823,7 @@ async function loadTeacherStudentProfile(){
     if(el) el.textContent = sessions.length ? sessions.map(s=>`${WEEKDAY_NAMES_AR[s.day]} — ${s.time}`).join(' · ') : 'لسه معملتش أي ميعاد ثابت للطالب ده';
   });
   $('#btnOpenChat')?.addEventListener('click', ()=>openChat(sid, teacherActiveStudent.name));
-  $('#btnStartCall')?.addEventListener('click', goToCallLab);
+  $('#btnStartCall')?.addEventListener('click', ()=> goToCallLab(sid, teacherActiveStudent.name));
   $('#btnEditProgress')?.addEventListener('click', openProgressModal);
   $('#btnAddLog')?.addEventListener('click', openDailyLogModal);
   $('#btnEditSchedule')?.addEventListener('click', ()=>openScheduleModal(sid, teacherActiveStudent.name));
@@ -3342,7 +3342,7 @@ function bindChatEvents(){
   state.chatLastRenderedLastId = null;
   state.pendingAttachments = [];
   $('#btnCloseChat').addEventListener('click', ()=>closeChat());
-  $('#btnCallFromChat').addEventListener('click', goToCallLab);
+  $('#btnCallFromChat').addEventListener('click', ()=> goToCallLab(o.uid, o.name));
   $('#btnSendMsg').addEventListener('click', sendChatMessage);
   $('#chatInput').addEventListener('keydown', e=>{ if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChatMessage(); } });
   $('#btnAttachFile').addEventListener('click', ()=> $('#chatFileInput').click());
@@ -3988,8 +3988,17 @@ function hashUidToNumber(uid){
 // من زرار المكالمة، لحد ما يتصلّح. بدل ما نفتح المكالمة القديمة، بنوجّه
 // المستخدم لصفحة "غرفة المكالمة" (call-lab.html) — بقت مربوطة بالكامل
 // بنفس جلسة الدخول والدور (معلمة/طالب)، فمفيش حاجة تتفق عليها يدويًا.
-function goToCallLab(){
-  window.open('call-lab.html', '_blank');
+// بنبعت معاها (لو معروف) هوية واسم الطالب/ة اللي المعلمة كانت شايفة بروفايلها
+// أو فاتحة شاتها، عشان call-lab.html تقدر تبعتلها كود الغرفة تلقائيًا في نفس الشات
+// بدل ما المعلمة تضطر تطلع تدور عليها تاني — ده مش بيغيّر حاجة لو الطرف التاني
+// مش معروف (بيفتح الصفحة عادي زي ما كان بالظبط).
+function goToCallLab(targetUid, targetName){
+  let url = 'call-lab.html';
+  if(targetUid){
+    const params = new URLSearchParams({ to: targetUid, name: targetName || '' });
+    url += '?' + params.toString();
+  }
+  window.open(url, '_blank');
 }
 // بقى في توكن حقيقي بيتجاب من TOKEN_SERVER_URL قبل أي join (شوف fetchAgoraToken تحت)
 async function startCall(otherUid, otherName){

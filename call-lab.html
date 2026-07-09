@@ -213,8 +213,8 @@ input{font-family:inherit;}
 }
 .call-btn.end{background:var(--danger); width:70px; height:70px; font-size:27px;}
 .call-btn.mute.active{background:var(--gold-500); color:var(--emerald-950);}
-.call-share-row{display:flex; gap:10px; width:100%; max-width:280px;}
-.call-share-row button{flex:1; background:rgba(255,255,255,.1); color:#f2ead2; border:1px solid rgba(255,255,255,.2); border-radius:12px; padding:10px; font-size:13px;}
+.call-share-row{display:flex; flex-wrap:wrap; gap:10px; width:100%; max-width:320px; justify-content:center;}
+.call-share-row button{flex:1; min-width:110px; background:rgba(255,255,255,.1); color:#f2ead2; border:1px solid rgba(255,255,255,.2); border-radius:12px; padding:10px; font-size:13px;}
 
 .hidden{display:none !important;}
 </style>
@@ -255,8 +255,22 @@ const state = {
   timerInt:null, seconds:0,
   roomCode:null, isTeacher:false,
   participantsRef:null, participantsCb:null,
-  pendingCode:null
+  pendingCode:null,
+  // لو المعلمة فتحت الصفحة دي من جوه شات طالبة معينة أو من بروفايلها (شوف index.html
+  // goToCallLab)، بنعرف هنا هي مين عشان نقدر نبعتلها كود الغرفة تلقائيًا في نفس الشات
+  targetUid:null, targetName:null,
+  // حالة وضع الصيانة — بتتحدث لحظيًا من siteConfig/maintenance زي المنصة الرئيسية بالظبط
+  maintenance:{enabled:false, message:''}, showingMaintenance:false
 };
+
+/* =====[ SECTION: قراءة بيانات الطالبة المستهدفة من رابط الصفحة (لو موجودة) ]===== */
+(function readTargetFromUrl(){
+  try{
+    const params = new URLSearchParams(location.search);
+    const to = params.get('to');
+    if(to){ state.targetUid = to; state.targetName = params.get('name') || ''; }
+  }catch(_){}
+})();
 
 /* =====[ SECTION: UTILITIES ]===== */
 function $(s){ return document.querySelector(s); }
@@ -269,6 +283,7 @@ function toast(msg, ms=2600){
 }
 function sanitizeCode(v){ return String(v||'').trim().replace(/[^0-9]/g,'').slice(0,6); }
 function generateRoomCode(){ return String(Math.floor(1000 + Math.random()*9000)); }
+function pairId(a,b){ return [a,b].sort().join('_'); }
 function hashUidToNumber(uid){
   let h = 0; for(let i=0;i<uid.length;i++){ h = (h*31 + uid.charCodeAt(i)) >>> 0; }
   return (h % 2147483000) + 1;
@@ -283,6 +298,51 @@ function initTheme(){
   setTheme(saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
 }
 initTheme();
+
+/* =====[ SECTION: وضع الصيانة (MAINTENANCE MODE) ]=====
+   نفس فكرة المنصة الرئيسية بالظبط: بنسمع على siteConfig/maintenance (قراءة عامة
+   مسموحة للكل حتى بدون تسجيل دخول) من أول ما الصفحة تفتح، وأي حد مش أدمن بيتمنع
+   من الدخول/الاستمرار في غرفة المكالمة طول ما الصيانة شغالة — حتى لو كان أصلاً
+   جوه مكالمة، بنطلعه منها بدل ما نسيبها شغالة لوحدها. */
+db.ref('siteConfig/maintenance').on('value', snap=>{
+  state.maintenance = snap.val() || {enabled:false, message:''};
+  handleMaintenanceChange();
+});
+
+function isAdminProfile(){ return !!(state.profile && state.profile.role === 'admin'); }
+
+async function handleMaintenanceChange(){
+  const shouldBlock = !!(state.maintenance && state.maintenance.enabled) && !isAdminProfile();
+  if(shouldBlock){
+    if(state.joined){ await leaveRoom(); }
+    renderMaintenance();
+  } else if(state.showingMaintenance){
+    state.showingMaintenance = false;
+    dispatchHomeScreen();
+  }
+}
+
+function renderMaintenance(){
+  state.showingMaintenance = true;
+  const msg = (state.maintenance && state.maintenance.message) || 'المنصة متوقفة مؤقتًا لإجراء بعض التحديثات، برجاء المحاولة لاحقًا 🌙';
+  renderShell('غرفة المكالمة', `
+    <div class="hero">
+      <div class="logo">🌙</div>
+      <h2>المنصة في وضع الصيانة</h2>
+      <p>${esc(msg)}</p>
+    </div>
+  `, {hideBack:true});
+}
+
+// بترجّع المستخدم للشاشة المناسبة له بعد ما الصيانة تتقفل (لو كان واقف على شاشة الصيانة)
+function dispatchHomeScreen(){
+  if(!state.user || !state.profile){ renderNoAuth(); return; }
+  if(state.profile.status==='banned'){ renderBlocked('banned'); return; }
+  if(state.profile.status==='pending'){ renderBlocked('pending'); return; }
+  if(state.role==='teacher'){ renderTeacherHome(); }
+  else if(state.role==='student'){ renderStudentHome(); }
+  else { renderRoleDenied(); }
+}
 
 async function fetchAgoraToken(channel, numericUid){
   const url = `${TOKEN_SERVER_URL}?channel=${encodeURIComponent(channel)}&uid=${numericUid}`;
@@ -314,7 +374,11 @@ function renderShell(title, bodyHtml, opts={}){
 
 /* =====[ SECTION: AUTH GATE — بيستخدم نفس جلسة تسجيل الدخول بتاعة المنصة ]===== */
 auth.onAuthStateChanged(async (user)=>{
-  if(!user){ renderNoAuth(); return; }
+  if(!user){
+    state.user = null; state.profile = null; state.role = null;
+    if(state.maintenance && state.maintenance.enabled){ renderMaintenance(); return; }
+    renderNoAuth(); return;
+  }
   state.user = user;
   try{
     const snap = await db.ref('users/'+user.uid).get();
@@ -322,6 +386,9 @@ auth.onAuthStateChanged(async (user)=>{
     if(!profile){ renderNoAuth(); return; }
     state.profile = profile;
     state.role = profile.role;
+
+    // بوابة وضع الصيانة: بتتفعّل قبل أي حاجة تانية، ولأي حد مش أدمن — نفس فكرة المنصة الرئيسية
+    if(state.maintenance && state.maintenance.enabled && !isAdminProfile()){ renderMaintenance(); return; }
 
     if(profile.status==='banned'){ renderBlocked('banned'); return; }
     if(profile.status==='pending'){ renderBlocked('pending'); return; }
@@ -373,6 +440,9 @@ function renderRoleDenied(){
 /* =====[ SECTION: شاشة المعلمة — إنشاء غرفة ]===== */
 function renderTeacherHome(){
   if(!state.pendingCode) state.pendingCode = generateRoomCode();
+  const targetHint = state.targetUid
+    ? `<div class="hint" style="margin-top:8px;">هيتبعت الكود ده تلقائيًا في شات <b>${esc(state.targetName||'الطالبة')}</b> فور ما تفتحي الغرفة.</div>`
+    : '';
   renderShell('غرفة مكالمة جديدة', `
     <div class="hero" style="padding-top:14px;">
       <div class="logo">📖</div>
@@ -385,7 +455,8 @@ function renderTeacherHome(){
         <div class="lbl">هتبعتي الكود ده لطالباتك</div>
         <div class="num" id="teacherCodeNum">${esc(state.pendingCode)}</div>
       </div>
-      <button class="btn ghost sm" id="btnRegenCode" style="margin-bottom:16px;">🔄 كود جديد</button>
+      ${targetHint}
+      <button class="btn ghost sm" id="btnRegenCode" style="margin:16px 0;">🔄 كود جديد</button>
       <button class="btn" id="btnCreateRoom">🎙️ افتحي الغرفة وابدئي المكالمة</button>
     </div>
   `);
@@ -394,6 +465,27 @@ function renderTeacherHome(){
     renderTeacherHome();
   });
   $('#btnCreateRoom').addEventListener('click', createAndJoinRoom);
+}
+
+/* =====[ SECTION: إرسال كود الغرفة تلقائيًا في شات الطالبة ]=====
+   لو المعلمة فاتحة الصفحة دي من جوه شات طالبة معينة أو من بروفايلها (state.targetUid)،
+   بنبعت لها كود الغرفة كرسالة عادية في نفس الشات — بنفس شكل رسائل الشات في المنصة
+   (chatThreads/$chatId/messages) عشان الطالبة تلاقيه فورًا من غير ما المعلمة تطلع
+   من هنا وتدور عليها تاني. */
+async function sendCodeToStudentChat(code, {silent=false}={}){
+  if(!state.targetUid || !state.user) return false;
+  const chatId = pairId(state.user.uid, state.targetUid);
+  const text = `🎙️ فتحت غرفة مكالمة جماعية — كود الغرفة: ${code}\nادخلي "غرفة المكالمة" من المنصة واكتبي نفس الكود عشان تنضمي.`;
+  const payload = { senderUid: state.user.uid, type:'text', text, ts: firebase.database.ServerValue.TIMESTAMP, read:false };
+  try{
+    await db.ref('chatThreads/'+chatId+'/messages').push(payload);
+    if(!silent) toast('اتبعت للطالبة في الشات ✔');
+    return true;
+  }catch(e){
+    console.error('[call-lab] sendCodeToStudentChat فشل', e);
+    if(!silent) toast('تعذر إرسال الكود في الشات');
+    return false;
+  }
 }
 
 async function createAndJoinRoom(){
@@ -419,6 +511,7 @@ async function createAndJoinRoom(){
     state.roomCode = code;
     state.isTeacher = true;
     state.displayName = state.profile.name || 'المعلمة';
+    if(state.targetUid){ sendCodeToStudentChat(code, {silent:true}); }
     await joinAgoraRoom(code);
   }catch(e){
     console.error('[call-lab] createAndJoinRoom فشل', e);
@@ -496,6 +589,7 @@ function renderCallScreen(){
         <div class="call-share-row">
           <button id="btnCopyCode">📋 نسخ الكود</button>
           <button id="btnShareCode">📤 مشاركة</button>
+          ${state.targetUid ? `<button id="btnResendCode">✉️ إعادة إرسال في الشات</button>` : ''}
         </div>` : ''}
         <div class="call-peers-mini" id="callPeersText">جارِ تحميل قائمة الحاضرين...</div>
       </div>
@@ -510,6 +604,7 @@ function renderCallScreen(){
   $('#btnMuteCall').addEventListener('click', toggleMute);
   $('#btnCopyCode')?.addEventListener('click', copyRoomCode);
   $('#btnShareCode')?.addEventListener('click', shareRoomCode);
+  $('#btnResendCode')?.addEventListener('click', ()=> sendCodeToStudentChat(state.roomCode));
 }
 
 function setCallDot(cls){ const el = $('#callConnDot'); if(el) el.className = 'call-conn-dot ' + cls; }
